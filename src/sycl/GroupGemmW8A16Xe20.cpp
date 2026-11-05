@@ -168,7 +168,10 @@ SGL_KERNEL_EXPORT void moe_grouped_mm_nt_xe20_w8a16(
     }
   }
   TORCH_CHECK(output.scalar_type() == at::ScalarType::BFloat16, "W8A16 output must be bfloat16");
-  TORCH_CHECK(n_experts > 0 && n_experts % 8 == 0, "n_experts must be a positive multiple of 8");
+  // n_experts == 1 is a plain dense GEMM (fp8_w8a16_gemm); the device loop has no
+  // multiple-of-8 requirement.
+  TORCH_CHECK(
+      n_experts == 1 || (n_experts > 0 && n_experts % 8 == 0), "n_experts must be 1 or a positive multiple of 8");
   TORCH_CHECK(activations.dim() == 2, "W8A16 activations must be 2D [M_total, K]");
   TORCH_CHECK(weights.dim() == 3, "W8A16 weights must be 3D [E, N, K]");
   TORCH_CHECK(output.dim() == 2, "W8A16 output must be 2D [M_total, N]");

@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple
 
 import torch
-from sgl_kernel.utils import _get_cache_buf, get_xpu_stream
+from sgl_kernel.utils import _get_cache_buf, get_xpu_stream, is_xe2_arch
 
 
 def awq_dequantize(
@@ -40,6 +40,49 @@ def fp8_scaled_mm(mat_a, mat_b, scales_a, scales_b, out_dtype, bias=None):
         out_dtype,
         bias,
     )
+
+
+def fp8_w8a16_gemm(
+    mat_a: torch.Tensor,
+    mat_b: torch.Tensor,
+    scales_b: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    out: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Weight-only FP8 dense GEMM on Xe2: ``out = mat_a @ dequant(mat_b).T + bias``.
+
+    Runs the Xe2 W8A16 grouped GEMM with a single expert, so activations are not
+    quantized.
+
+    Args:
+        mat_a: [M, K] bfloat16 activations.
+        mat_b: [N, K] float8_e4m3fn weights, contiguous. N % 64 == 0, K % 32 == 0.
+        scales_b: float32 weight scales, either one per-tensor value (any shape
+            with a single element) or [ceil(N / 128), K / 128] 128x128 block scales.
+        bias: optional float32 [N].
+        out: optional [M, N] bfloat16 output buffer.
+    """
+    assert is_xe2_arch(), "fp8_w8a16_gemm runs the Xe2 W8A16 grouped GEMM"
+    m = mat_a.shape[0]
+    n = mat_b.shape[0]
+    if out is None:
+        out = torch.empty((m, n), dtype=torch.bfloat16, device=mat_a.device)
+    if m == 0:
+        return out
+    if scales_b.numel() == 1:
+        scales_b = scales_b.reshape(1)
+    else:
+        scales_b = scales_b.unsqueeze(0)
+    torch.ops.sgl_kernel.moe_grouped_mm_nt_xe20_w8a16(
+        out,
+        mat_a,
+        mat_b.unsqueeze(0),
+        scales_b,
+        None if bias is None else bias.view(1, n),
+        torch.full((1,), m, dtype=torch.int32, device=mat_a.device),
+        1,
+    )
+    return out
 
 
 def _bmm_fp8_internal(
